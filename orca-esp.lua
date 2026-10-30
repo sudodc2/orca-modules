@@ -1,6 +1,6 @@
--- Unnamed ESP (Orca edition) — remade in the AudioCrafter/Orca style
--- draggable window · switch rows · steppers · unload button
--- Drawing API backend · safe to re-execute
+-- Unnamed ESP · orca edition
+-- rebuilt on the Orca component model: el() element trees, uiIcon() lucide
+-- pipeline, apps.players theme tokens, Card chrome, pill switches, icon buttons
 -- https://github.com/sudodc2/orca-modules
 
 if getgenv()._ORCA_ESP_UNLOAD then pcall(getgenv()._ORCA_ESP_UNLOAD) end
@@ -8,6 +8,7 @@ if getgenv()._ORCA_ESP_UNLOAD then pcall(getgenv()._ORCA_ESP_UNLOAD) end
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
+local TweenSvc   = game:GetService("TweenService")
 local HttpService= game:GetService("HttpService")
 local LP         = Players.LocalPlayer
 local Camera     = workspace.CurrentCamera
@@ -36,8 +37,7 @@ local TEAM   = Color3.fromRGB(90, 200, 120)
 local WHITE  = Color3.fromRGB(235, 235, 240)
 
 -- ============================== drawing pool ==============================
-local pool = {} -- [player] = {box=,boxo=,name=,dist=,hbg=,hfg=,tracer=,dot=}
-local conns = {}
+local pool, conns = {}, {}
 local dead = false
 
 local function newDrawing(kind, props)
@@ -87,8 +87,7 @@ rayParams.FilterType = Enum.RaycastFilterType.Exclude
 local function visible(head, char)
     if not opts.VisibilityCheck then return true end
     rayParams.FilterDescendantsInstances = {LP.Character, char, Camera}
-    local r = workspace:Raycast(Camera.CFrame.Position, head.Position - Camera.CFrame.Position, rayParams)
-    return r == nil
+    return workspace:Raycast(Camera.CFrame.Position, head.Position - Camera.CFrame.Position, rayParams) == nil
 end
 
 local chCross = newDrawing("Circle", {Radius = 6, Thickness = 1, NumSides = 32, Filled = false, Color = WHITE})
@@ -118,9 +117,9 @@ local function step()
         local w = math.floor(4.5 * scale); local h = math.floor(6 * scale)
         local x = math.floor(pos.X - w/2); local y = math.floor(pos.Y - h/2)
         local col = colOf(plr)
-        local a = visible(head, char) and 1 or 0.35 -- dim when occluded
+        local a = visible(head, char) and 1 or 0.35
 
-        local function setA(d, base) -- cheap alpha via color lerp to black
+        local function setA(d)
             if a < 1 then pcall(function()
                 local c = d.Color; if c then d.Color = c:Lerp(Color3.new(0,0,0), 1 - a) end
             end) end
@@ -169,71 +168,243 @@ local function step()
     end
 end
 
--- ============================== UI ==============================
-local ACCENT = Color3.fromRGB(122, 162, 255)
-local BG     = Color3.fromRGB(18, 19, 24)
-local CARD   = Color3.fromRGB(28, 30, 38)
-local ROW    = Color3.fromRGB(22, 23, 30)
-local TXT    = Color3.fromRGB(232, 233, 240)
-local SUB    = Color3.fromRGB(150, 152, 165)
+-- ============================== orca ui kit ==============================
+-- theme tokens (apps.players subtheme — same palette the dashboard uses)
+local T = {
+    background  = Color3.fromHex("#232428"), -- card
+    inset       = Color3.fromHex("#1B1C20"), -- rows / chips / pills
+    foreground  = Color3.fromHex("#ffffff"),
+    accent      = Color3.fromHex("#37a4cc"), -- themeButton accent
+    switchOff   = Color3.fromRGB(41, 42, 48),-- stock switch track when off
+    danger      = Color3.fromHex("#EC423D"),
+    dangerBg    = Color3.fromRGB(60, 30, 34),
+}
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "OrcaESP_" .. HttpService:GenerateGUID(false):sub(1, 8)
-gui.ResetOnSpawn = false
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.DisplayOrder = 8
-gui.IgnoreGuiInset = true
+local function ud(x, y) return UDim2.new(0, x, 0, y) end
+
+-- same icon pipeline as the dashboard: lucide svg -> weserv png -> _orca/icons -> customasset
+local _IC = (getgenv and getgenv()._ORCA_ICONS) or {}
+if getgenv then getgenv()._ORCA_ICONS = _IC end
+local function uiIcon(name)
+    if _IC[name] ~= nil then return _IC[name] end
+    local p = "_orca/icons/" .. name .. ".png"
+    if not (isfile and isfile(p)) then
+        -- fetch through the same proxy the bundle uses, then cache for every module
+        local url = "https://images.weserv.nl/?url=api.iconify.design%2Flucide%2F"
+            .. name .. ".svg%3Fcolor%3Dwhite%26height%3D64&w=64&h=64&fit=contain&output=png"
+        local ok, data = pcall(function() return game:HttpGet(url, true) end)
+        if ok and data and #data > 100 and writefile then
+            pcall(makefolder, "_orca"); pcall(makefolder, "_orca/icons")
+            pcall(writefile, p, data)
+        end
+    end
+    if isfile and isfile(p) then
+        local ok, v = pcall(getcustomasset, p)
+        if ok and v ~= "" then _IC[name] = v return v end
+    end
+    _IC[name] = false
+    return nil
+end
+
+-- roact-style element tree: el(class, props, {children}) / E.* = events
+local E = {Activated="Activated", MouseEnter="MouseEnter", MouseLeave="MouseLeave",
+           InputBegan="InputBegan", InputEnded="InputEnded"}
+local function el(class, props, children)
+    local i = Instance.new(class)
+    for k, v in pairs(props or {}) do
+        if E[k] then i[E[k]]:Connect(v) else pcall(function() i[k] = v end) end
+    end
+    for _, c in ipairs(children or {}) do c.Parent = i end
+    return i
+end
+local function corner(r) return el("UICorner", {CornerRadius = UDim.new(0, r)}) end
+
+-- ============================== window ==============================
+local gui = el("ScreenGui", {
+    Name = "OrcaESP_" .. HttpService:GenerateGUID(false):sub(1, 8),
+    ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder = 8, IgnoreGuiInset = true,
+})
 pcall(function() gui.Parent = gethui() end)
 if not gui.Parent then pcall(function() gui.Parent = game:GetService("CoreGui") end) end
 if not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
 
-local win = Instance.new("Frame")
-win.Size = UDim2.new(0, 252, 0, 0)
-win.AutomaticSize = Enum.AutomaticSize.Y
-win.Position = UDim2.new(0, 24, 0.5, -160)
-win.BackgroundColor3 = BG
-win.BackgroundTransparency = 0.06
-win.BorderSizePixel = 0
+local CARD_W, PAD, ROW_W, ROW_H = 288, 12, 264, 30
+local win = el("Frame", {
+    Size = ud(CARD_W, 44), Position = ud(24, 140),
+    BackgroundColor3 = T.background, BackgroundTransparency = 0.05,
+    BorderSizePixel = 0, Active = true,
+}, {
+    corner(16),
+    el("UIStroke", {Color = T.foreground, Transparency = 0.92, Thickness = 1}),
+})
 win.Parent = gui
-Instance.new("UICorner", win).CornerRadius = UDim.new(0, 12)
-local stroke = Instance.new("UIStroke", win)
-stroke.Color = Color3.fromRGB(255,255,255); stroke.Transparency = 0.9; stroke.Thickness = 1
 
-local pad = Instance.new("UIPadding", win)
-pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 10)
-pad.PaddingLeft = UDim.new(0, 10); pad.PaddingRight = UDim.new(0, 10)
-local list = Instance.new("UIListLayout", win)
-list.SortOrder = Enum.SortOrder.LayoutOrder; list.Padding = UDim.new(0, 4)
-
--- ---- title bar (drag handle)
-local title = Instance.new("Frame")
-title.Size = UDim2.new(1, 0, 0, 30); title.BackgroundTransparency = 1
-title.LayoutOrder = 0; title.Parent = win
-local ttl = Instance.new("TextLabel", title)
-ttl.Size = UDim2.new(1, -60, 1, 0); ttl.Position = UDim2.new(0, 6, 0, 0)
-ttl.BackgroundTransparency = 1; ttl.Text = "Unnamed ESP"; ttl.Font = Enum.Font.GothamBold
-ttl.TextSize = 14; ttl.TextColor3 = TXT; ttl.TextXAlignment = Enum.TextXAlignment.Left
-local by = Instance.new("TextLabel", title)
-by.Size = UDim2.new(1, -60, 0, 12); by.Position = UDim2.new(0, 6, 0, 16)
-by.BackgroundTransparency = 1; by.Text = "orca edition"; by.Font = Enum.Font.Gotham
-by.TextSize = 10; by.TextColor3 = SUB; by.TextXAlignment = Enum.TextXAlignment.Left
-
-local function titleBtn(txt, xoff, col)
-    local b = Instance.new("TextButton", title)
-    b.Size = UDim2.new(0, 22, 0, 22); b.Position = UDim2.new(1, xoff, 0, 4)
-    b.BackgroundColor3 = ROW; b.BackgroundTransparency = 0.2; b.Text = txt
-    b.Font = Enum.Font.GothamBold; b.TextSize = 12; b.TextColor3 = col or TXT
-    b.AutoButtonColor = true; b.BorderSizePixel = 0
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    return b
+-- icon button: lucide asset when the pipeline yields one, glyph fallback otherwise
+local function iconBtn(name, glyph, x, y)
+    local img = uiIcon(name)
+    return el("ImageButton", {
+        Size = ud(20, 20), Position = ud(x, y),
+        BackgroundColor3 = T.inset, BackgroundTransparency = 1,
+        Image = img or "", ScaleType = Enum.ScaleType.Fit,
+        ImageColor3 = T.foreground, ImageTransparency = img and 0.45 or 1,
+    }, {
+        corner(6),
+        el("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            Visible = img == nil, Text = glyph, Font = Enum.Font.GothamBold,
+            TextSize = 13, TextColor3 = T.foreground}),
+    })
 end
-local btnHide   = titleBtn("–", -50)
-local btnUnload = titleBtn("✕", -26, Color3.fromRGB(255, 110, 110))
 
--- dragging
+-- ---- header (Card chrome: icon chip + title + subtitle + window buttons)
+local header = el("Frame", {Size = ud(CARD_W, 40), Position = ud(0, 0),
+    BackgroundTransparency = 1, Parent = win})
+
+el("Frame", {Size = ud(26, 26), Position = ud(PAD, 7),
+    BackgroundColor3 = T.inset, BorderSizePixel = 0, Parent = header}, {
+    corner(8),
+    el("ImageLabel", {Size = ud(14, 14), Position = ud(6, 6), BackgroundTransparency = 1,
+        Image = uiIcon("eye") or "", ImageColor3 = T.accent, ScaleType = Enum.ScaleType.Fit}),
+})
+el("TextLabel", {Size = ud(150, 16), Position = ud(46, 7), BackgroundTransparency = 1,
+    Text = "Unnamed ESP", Font = Enum.Font.GothamBlack, TextSize = 14,
+    TextColor3 = T.foreground, TextXAlignment = Enum.TextXAlignment.Left, Parent = header})
+el("TextLabel", {Size = ud(150, 12), Position = ud(46, 22), BackgroundTransparency = 1,
+    Text = "orca edition", Font = Enum.Font.Gotham, TextSize = 10,
+    TextColor3 = T.foreground, TextTransparency = 0.5,
+    TextXAlignment = Enum.TextXAlignment.Left, Parent = header})
+
+local btnMin   = iconBtn("minus", "−", CARD_W - 56, 10); btnMin.Parent = header
+local btnClose = iconBtn("x", "✕", CARD_W - 32, 10);     btnClose.Parent = header
+for _, b in ipairs({btnMin, btnClose}) do
+    b.MouseEnter:Connect(function()
+        TweenSvc:Create(b, TweenInfo.new(0.1), {BackgroundTransparency = 0.55}):Play()
+        if b.Image ~= "" then b.ImageTransparency = 0 end
+    end)
+    b.MouseLeave:Connect(function()
+        TweenSvc:Create(b, TweenInfo.new(0.1), {BackgroundTransparency = 1}):Play()
+        if b.Image ~= "" then b.ImageTransparency = 0.45 end
+    end)
+end
+
+-- ---- body
+local body = el("Frame", {Size = ud(CARD_W, 0), Position = ud(0, 40),
+    BackgroundTransparency = 1, Parent = win})
+local y = 4
+local function rowFrame(h)
+    local r = el("Frame", {Size = ud(ROW_W, h), Position = ud(PAD, y),
+        BackgroundColor3 = T.inset, BackgroundTransparency = 0.2,
+        BorderSizePixel = 0, Parent = body}, {corner(8)})
+    y = y + h + 4
+    return r
+end
+local function section(txt)
+    el("TextLabel", {Size = ud(ROW_W, 14), Position = ud(PAD + 4, y), BackgroundTransparency = 1,
+        Text = txt, Font = Enum.Font.GothamBold, TextSize = 10,
+        TextColor3 = T.foreground, TextTransparency = 0.5,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = body})
+    y = y + 18
+end
+
+-- orca pill switch: 40x22 track, 18x18 white knob, accent when on
+local function sw(key, x, yy)
+    local on = opts[key]
+    local knob = el("Frame", {Size = ud(18, 18),
+        Position = on and ud(20, 2) or ud(2, 2),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0}, {corner(9)})
+    local track = el("Frame", {Size = ud(40, 22), Position = ud(x, yy),
+        BackgroundColor3 = on and T.accent or T.switchOff, BorderSizePixel = 0}, {
+        corner(11), knob,
+        el("TextButton", {Text = "", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            [E.Activated] = function()
+                opts[key] = not opts[key]
+                local st = opts[key]
+                TweenSvc:Create(track, TweenInfo.new(0.12), {
+                    BackgroundColor3 = st and T.accent or T.switchOff}):Play()
+                TweenSvc:Create(knob, TweenInfo.new(0.12), {
+                    Position = st and ud(20, 2) or ud(2, 2)}):Play()
+            end}),
+    })
+    return track
+end
+
+local function toggleRow(label, key)
+    local r = rowFrame(ROW_H)
+    el("TextLabel", {Size = ud(ROW_W - 60, ROW_H), Position = ud(10, 0), BackgroundTransparency = 1,
+        Text = label, Font = Enum.Font.Gotham, TextSize = 12,
+        TextColor3 = T.foreground, TextXAlignment = Enum.TextXAlignment.Left, Parent = r})
+    sw(key, ROW_W - 50, 4).Parent = r
+end
+
+local function stepperRow(label, key, min, max, stepv)
+    local r = rowFrame(ROW_H)
+    el("TextLabel", {Size = ud(ROW_W - 120, ROW_H), Position = ud(10, 0), BackgroundTransparency = 1,
+        Text = label, Font = Enum.Font.Gotham, TextSize = 12,
+        TextColor3 = T.foreground, TextXAlignment = Enum.TextXAlignment.Left, Parent = r})
+    local val = el("TextLabel", {Size = ud(40, 20), Position = ud(ROW_W - 68, 5),
+        BackgroundColor3 = T.background, BackgroundTransparency = 0.3, BorderSizePixel = 0,
+        Text = tostring(opts[key]), Font = Enum.Font.GothamBold, TextSize = 11,
+        TextColor3 = T.foreground, Parent = r}, {corner(6)})
+    local function stepBtn(name, glyph, x)
+        local b = iconBtn(name, glyph, x, 5)
+        b.BackgroundTransparency = 0.3; b.BackgroundColor3 = T.background
+        b.Parent = r
+        return b
+    end
+    local bm = stepBtn("minus", "−", ROW_W - 94)
+    local bp = stepBtn("plus", "+", ROW_W - 24)
+    bm.Activated:Connect(function()
+        opts[key] = math.clamp(opts[key] - stepv, min, max); val.Text = tostring(opts[key])
+    end)
+    bp.Activated:Connect(function()
+        opts[key] = math.clamp(opts[key] + stepv, min, max); val.Text = tostring(opts[key])
+    end)
+end
+
+section("DISPLAY")
+toggleRow("ESP Enabled",      "Enabled")
+toggleRow("Show Team",        "TeamCheck")
+toggleRow("Team Color",       "TeamColor")
+toggleRow("Names",            "Names")
+toggleRow("Distance",         "Distance")
+toggleRow("Health",           "Health")
+toggleRow("Boxes",            "Boxes")
+toggleRow("Tracers",          "Tracers")
+toggleRow("Head Dot",         "HeadDot")
+toggleRow("Visibility Check", "VisibilityCheck")
+toggleRow("Crosshair",        "Crosshair")
+toggleRow("Text Outline",     "TextOutline")
+section("SETTINGS")
+stepperRow("Text Size",    "TextSize",    8,   32,   1)
+stepperRow("Y Offset",     "YOffset",     -10, 10,   1)
+stepperRow("Max Distance", "MaxDistance", 50,  5000, 50)
+
+local foot = rowFrame(30)
+foot.BackgroundColor3 = T.dangerBg; foot.BackgroundTransparency = 0.3
+el("TextLabel", {Size = ud(ROW_W - 100, 30), Position = ud(10, 0), BackgroundTransparency = 1,
+    Text = "Unload ESP", Font = Enum.Font.GothamBold, TextSize = 12,
+    TextColor3 = Color3.fromRGB(255, 140, 140), TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = foot})
+el("TextLabel", {Size = ud(90, 30), Position = ud(ROW_W - 96, 0), BackgroundTransparency = 1,
+    Text = "RShift hide", Font = Enum.Font.Gotham, TextSize = 10,
+    TextColor3 = T.foreground, TextTransparency = 0.5,
+    TextXAlignment = Enum.TextXAlignment.Right, Parent = foot})
+local footHit = el("TextButton", {Text = "", Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1, Parent = foot})
+
+local BODY_H = y + 8
+body.Size = ud(CARD_W, BODY_H)
+local function setMin(m)
+    body.Visible = not m
+    TweenSvc:Create(win, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+        Size = ud(CARD_W, m and 44 or 40 + BODY_H)}):Play()
+end
+win.Size = ud(CARD_W, 40 + BODY_H)
+
+-- drag on header
 do
     local dragging, dragStart, startPos
-    title.InputBegan:Connect(function(i)
+    header.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true; dragStart = i.Position; startPos = win.Position
         end
@@ -250,115 +421,6 @@ do
     end))
 end
 
--- ---- row builders
-local function rowBase(h)
-    local r = Instance.new("Frame")
-    r.Size = UDim2.new(1, 0, 0, h); r.BackgroundColor3 = ROW
-    r.BackgroundTransparency = 0.35; r.BorderSizePixel = 0
-    Instance.new("UICorner", r).CornerRadius = UDim.new(0, 8)
-    r.Parent = win
-    return r
-end
-
-local switches = {}
-local function addToggle(label, key)
-    local r = rowBase(30)
-    local t = Instance.new("TextLabel", r)
-    t.Size = UDim2.new(1, -52, 1, 0); t.Position = UDim2.new(0, 10, 0, 0)
-    t.BackgroundTransparency = 1; t.Text = label; t.Font = Enum.Font.Gotham
-    t.TextSize = 12; t.TextColor3 = TXT; t.TextXAlignment = Enum.TextXAlignment.Left
-    local sw = Instance.new("Frame", r)
-    sw.Size = UDim2.new(0, 34, 0, 18); sw.Position = UDim2.new(1, -44, 0.5, -9)
-    sw.BackgroundColor3 = opts[key] and ACCENT or Color3.fromRGB(60, 62, 72)
-    sw.BorderSizePixel = 0
-    Instance.new("UICorner", sw).CornerRadius = UDim.new(1, 0)
-    local knob = Instance.new("Frame", sw)
-    knob.Size = UDim2.new(0, 12, 0, 12); knob.BorderSizePixel = 0
-    knob.BackgroundColor3 = Color3.fromRGB(245, 245, 250)
-    knob.Position = opts[key] and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-    local hit = Instance.new("TextButton", r)
-    hit.Size = UDim2.new(1, 0, 1, 0); hit.BackgroundTransparency = 1; hit.Text = ""
-    hit.Activated:Connect(function()
-        opts[key] = not opts[key]
-        local on = opts[key]
-        game:GetService("TweenService"):Create(sw, TweenInfo.new(0.12), {
-            BackgroundColor3 = on and ACCENT or Color3.fromRGB(60, 62, 72)}):Play()
-        game:GetService("TweenService"):Create(knob, TweenInfo.new(0.12), {
-            Position = on and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)}):Play()
-    end)
-    switches[key] = {sw = sw, knob = knob}
-end
-
-local function addStepper(label, key, min, max, stepv)
-    local r = rowBase(30)
-    local t = Instance.new("TextLabel", r)
-    t.Size = UDim2.new(1, -110, 1, 0); t.Position = UDim2.new(0, 10, 0, 0)
-    t.BackgroundTransparency = 1; t.Text = label; t.Font = Enum.Font.Gotham
-    t.TextSize = 12; t.TextColor3 = TXT; t.TextXAlignment = Enum.TextXAlignment.Left
-    local val = Instance.new("TextLabel", r)
-    val.Size = UDim2.new(0, 46, 0, 20); val.Position = UDim2.new(1, -76, 0.5, -10)
-    val.BackgroundColor3 = CARD; val.BackgroundTransparency = 0.2; val.BorderSizePixel = 0
-    val.Text = tostring(opts[key]); val.Font = Enum.Font.GothamBold; val.TextSize = 11
-    val.TextColor3 = TXT
-    Instance.new("UICorner", val).CornerRadius = UDim.new(0, 6)
-    local function mkBtn(txt, xo)
-        local b = Instance.new("TextButton", r)
-        b.Size = UDim2.new(0, 20, 0, 20); b.Position = UDim2.new(1, xo, 0.5, -10)
-        b.BackgroundColor3 = CARD; b.BackgroundTransparency = 0.2; b.BorderSizePixel = 0
-        b.Text = txt; b.Font = Enum.Font.GothamBold; b.TextSize = 13; b.TextColor3 = TXT
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-        return b
-    end
-    local minus = mkBtn("−", -52); local plus = mkBtn("+", -26)
-    minus.Activated:Connect(function()
-        opts[key] = math.clamp(opts[key] - stepv, min, max); val.Text = tostring(opts[key])
-    end)
-    plus.Activated:Connect(function()
-        opts[key] = math.clamp(opts[key] + stepv, min, max); val.Text = tostring(opts[key])
-    end)
-end
-
-local function addDivider(txt)
-    local d = Instance.new("TextLabel")
-    d.Size = UDim2.new(1, 0, 0, 16); d.BackgroundTransparency = 1; d.Text = txt
-    d.Font = Enum.Font.GothamBold; d.TextSize = 10; d.TextColor3 = SUB
-    d.TextXAlignment = Enum.TextXAlignment.Left; d.Parent = win
-    local p2 = Instance.new("UIPadding", d); p2.PaddingLeft = UDim.new(0, 6)
-end
-
-addDivider("DISPLAY")
-addToggle("ESP Enabled", "Enabled")
-addToggle("Show Team", "TeamCheck")
-addToggle("Team Color", "TeamColor")
-addToggle("Names", "Names")
-addToggle("Distance", "Distance")
-addToggle("Health", "Health")
-addToggle("Boxes", "Boxes")
-addToggle("Tracers", "Tracers")
-addToggle("Head Dot", "HeadDot")
-addToggle("Visibility Check", "VisibilityCheck")
-addToggle("Crosshair", "Crosshair")
-addToggle("Text Outline", "TextOutline")
-addDivider("SETTINGS")
-addStepper("Text Size", "TextSize", 8, 32, 1)
-addStepper("Y Offset", "YOffset", -10, 10, 1)
-addStepper("Max Distance", "MaxDistance", 50, 5000, 50)
-
-local foot = rowBase(32)
-foot.BackgroundColor3 = Color3.fromRGB(60, 30, 34); foot.BackgroundTransparency = 0.3
-local fl = Instance.new("TextLabel", foot)
-fl.Size = UDim2.new(1, -10, 1, 0); fl.Position = UDim2.new(0, 10, 0, 0)
-fl.BackgroundTransparency = 1; fl.Text = "Unload ESP"; fl.Font = Enum.Font.GothamBold
-fl.TextSize = 12; fl.TextColor3 = Color3.fromRGB(255, 140, 140)
-fl.TextXAlignment = Enum.TextXAlignment.Left
-local hint = Instance.new("TextLabel", foot)
-hint.Size = UDim2.new(0, 90, 1, 0); hint.Position = UDim2.new(1, -96, 0, 0)
-hint.BackgroundTransparency = 1; hint.Text = "RShift hide"; hint.Font = Enum.Font.Gotham
-hint.TextSize = 10; hint.TextColor3 = SUB; hint.TextXAlignment = Enum.TextXAlignment.Right
-local fb = Instance.new("TextButton", foot)
-fb.Size = UDim2.new(1, 0, 1, 0); fb.BackgroundTransparency = 1; fb.Text = ""
-
 -- ============================== unload ==============================
 local function unload()
     if dead then return end; dead = true
@@ -372,11 +434,11 @@ end
 getgenv()._ORCA_ESP_UNLOAD = unload
 getgenv()._ORCA_ESP_LOADED = true
 
-fb.Activated:Connect(unload)
-btnUnload.Activated:Connect(unload)
-btnHide.Activated:Connect(function() win.Visible = not win.Visible end)
+local minimized = false
+footHit.Activated:Connect(unload)
+btnClose.Activated:Connect(unload)
+btnMin.Activated:Connect(function() minimized = not minimized setMin(minimized) end)
 
--- menu key + player tracking
 table.insert(conns, UIS.InputBegan:Connect(function(i, gpe)
     if not gpe and i.KeyCode == opts.MenuKey then win.Visible = not win.Visible end
 end))
