@@ -1,16 +1,21 @@
 # orca-modules
 
-Project-owned remakes/reskins of external scripts for the AudioCrafter/Orca shell.
+External scripts re-themed for the Orca dashboard. All run via `loadstring(game:HttpGet(...))()`.
 
-## Load
-
+## Unnamed ESP (orca edition)
 ```lua
--- Unnamed ESP (Orca edition): draggable window, switches, unload button
 loadstring(game:HttpGet("https://raw.githubusercontent.com/sudodc2/orca-modules/main/orca-esp.lua"))()
+```
+Draggable window, pill switches, steppers, minimize + close buttons. RightShift hides.
 
--- Infinite Yield (Orca skin): same code, dark rounded UI, pinned bottom-right
+## Infinite Yield FE (orca skin)
+```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/sudodc2/orca-modules/main/infiniteyield.lua"))()
 ```
+Stock IY with the Orca dark skin + bottom-right minimized pill.
 
-- `orca-esp.lua` — clean-room rewrite of Unnamed ESP in Orca style. RightShift hides the menu, red footer button unloads everything.
-- `infiniteyield.lua` — verbatim Infinite Yield source + Orca skin block (dark palette, rounded corners, bottom-right anchor).
+## Dex Explorer (orca skin)
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/sudodc2/orca-modules/main/orca-dex.lua"))()
+```
+Stock Dex core + live re-theme to the Orca palette.
